@@ -1,0 +1,150 @@
+const express = require('express');
+const { Pool } = require('pg');
+const redis = require('redis');
+const performance = require('perf_hooks').performance;
+
+const app = express();
+app.use(express.json());
+
+// PostgreSQL configuration
+const pool = new Pool({
+  user: 'postgres',
+  host: '192.168.48.131',
+  database: 'user_db',
+  password: 'postgres',
+  port: 5432,
+});
+
+// Redis configuration
+const redisClient = redis.createClient({
+  socket: {
+    host: '192.168.48.132',
+    port: 6379,
+    family: 4,
+  },
+  password: 'pratham', // Omit this line if no password is needed
+});
+
+redisClient.on('connect', () => {
+  console.log('Redis client connected');
+});
+
+redisClient.on('error', (err) => {
+  console.error('Redis error:', err);
+});
+
+// Connect Redis
+async function connectRedis() {
+  try {
+    await redisClient.connect();
+    console.log('Connected to Redis');
+  } catch (err) {
+    console.error('Redis connection failed:', err);
+    process.exit(1);
+  }
+}
+
+// Helper function to get user data from PostgreSQL
+async function getUserFromDB(userId) {
+  const res = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+  return res.rows[0];
+}
+
+// Endpoint to get user data (with caching)
+app.get('/users/:id', async (req, res) => {
+  const userId = req.params.id;
+  const start = performance.now(); // Start timing the request
+
+  try {
+    // Check Redis cache
+    const cachedUser = await redisClient.get(`user:${userId}`);
+    if (cachedUser) {
+      const end = performance.now(); // End timing the request
+      const timeTaken = (end - start).toFixed(2); // Time in ms
+      console.log('Cache hit');
+      return res.json({
+        source: 'cache',
+        user: JSON.parse(cachedUser),
+        time: `${timeTaken} ms`,  // Ensure timeTaken is added to response
+      });
+    }
+
+    // If not in cache, get data from PostgreSQL
+    const user = await getUserFromDB(userId);
+    if (user) {
+      // Cache the result for future use (1-hour TTL)
+      await redisClient.setEx(`user:${userId}`, 3600, JSON.stringify(user));
+      const end = performance.now(); // End timing the request
+      const timeTaken = (end - start).toFixed(2); // Time in ms
+      console.log('Cache miss');
+      return res.json({
+        source: 'database',
+        user,
+        time: `${timeTaken} ms`,  // Ensure timeTaken is added to response
+      });
+    } else {
+      return res.status(404).json({ error: 'User not found' });
+    }
+  } catch (err) {
+    console.error('Error fetching user:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Endpoint to get all users (with caching)
+app.get('/users', async (req, res) => {
+  const start = performance.now(); // Start timing the request
+
+  try {
+    // Check Redis cache
+    const cachedUsers = await redisClient.get('users');
+    if (cachedUsers) {
+      const end = performance.now(); // End timing the request
+      const timeTaken = (end - start).toFixed(2); // Time in ms
+      console.log('Cache hit for users list');
+      return res.json({
+        source: 'cache',
+        users: JSON.parse(cachedUsers),
+        time: `${timeTaken} ms`,  // Ensure timeTaken is added to response
+      });
+    }
+
+    // If not in cache, get data from PostgreSQL
+    const result = await pool.query('SELECT * FROM users');
+    const users = result.rows;
+    // Cache the result for future use (1-hour TTL)
+    await redisClient.setEx('users', 3600, JSON.stringify(users));
+
+    const end = performance.now(); // End timing the request
+    const timeTaken = (end - start).toFixed(2); // Time in ms
+    console.log('Cache miss for users list');
+    res.json({
+      source: 'database',
+      users,
+      time: `${timeTaken} ms`,  // Ensure timeTaken is added to response
+    });
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Graceful shutdown of PostgreSQL and Redis connections
+function shutdown() {
+  redisClient.quit();
+  pool.end();
+  console.log('Gracefully shutting down');
+  process.exit(0);
+}
+
+// Start the server after Redis connection is established
+(async () => {
+  await connectRedis();
+  app.listen(5001, () => {
+    console.log('Server running on http://0.0.0.0:5001');
+  });
+})();
+
+// Handle termination signals
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

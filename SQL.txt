@@ -1,0 +1,33 @@
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100),
+    email VARCHAR(100) UNIQUE,
+    age INT
+);
+
+
+
+DO $$ 
+DECLARE
+  random_name VARCHAR(255);
+  random_age INT;
+BEGIN
+  FOR i IN 1..1000 LOOP
+    -- Generate a random name by combining random letters
+    random_name := chr((random() * (122 - 97) + 97)::int) || 
+                   chr((random() * (122 - 97) + 97)::int) || 
+                   chr((random() * (122 - 97) + 97)::int) ||
+                   chr((random () * (122 - 97) + 97)::int);
+
+    -- Generate a random age between 18 and 100
+    random_age := (random() * (100 - 18) + 18)::int;
+
+    -- Insert the generated random name and age into the users table
+    INSERT INTO users (name, email, age) 
+    VALUES (
+      random_name,
+      random_name || '@example.com',
+      random_age
+    );
+  END LOOP;
+END $$;
